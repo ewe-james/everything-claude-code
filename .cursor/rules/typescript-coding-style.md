@@ -61,3 +61,11 @@ const validated = schema.parse(input)
 - No `console.log` statements in production code
 - Use proper logging libraries instead
 - See hooks for automatic detection
+
+## TypeScript Naming Conventions
+
+| Type        | Prefix | Example                      |
+|-------------|--------|------------------------------|
+| `type`      | `T`    | `TUser`, `TApiResponse`      |
+| `interface` | `I`    | `IButtonProps`, `IAuthStore` |
+| `enum`      | `E`    | `EStatus`, `EUserRole`       |

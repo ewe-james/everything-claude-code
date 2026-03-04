@@ -9,6 +9,9 @@ paths:
 
 > This file extends [common/patterns.md](../common/patterns.md) with TypeScript/JavaScript specific content.
 
+## Project Structure
+
+
 ## API Response Format
 
 ```typescript

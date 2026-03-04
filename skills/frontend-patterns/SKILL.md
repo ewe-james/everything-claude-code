@@ -1,22 +1,50 @@
 ---
 name: frontend-patterns
-description: Frontend development patterns for React, Next.js, state management, performance optimization, and UI best practices.
+description: Frontend development patterns for React, TypeScript, Next.js, TanStack Start, state management, performance optimization, testing, and UI best practices.
 origin: ECC
 ---
 
 # Frontend Development Patterns
 
-Modern frontend patterns for React, Next.js, and performant user interfaces.
+Modern frontend patterns for React, TypeScript, Next.js, TanStack Start, and performant user interfaces.
 
-## When to Activate
+## Quick Reference
 
-- Building React components (composition, props, rendering)
-- Managing state (useState, useReducer, Zustand, Context)
-- Implementing data fetching (SWR, React Query, server components)
-- Optimizing performance (memoization, virtualization, code splitting)
-- Working with forms (validation, controlled inputs, Zod schemas)
-- Handling client-side routing and navigation
-- Building accessible, responsive UI patterns
+### Technology Stack
+
+| Category | Primary | Alternatives |
+|----------|---------|--------------|
+| Language | TypeScript | JavaScript (ES6+) |
+| Framework | TanStack Start | Next.js, React |
+| Runtime | Node.js | Bun |
+| Styling | Tailwind CSS | Styled Components, CSS Modules |
+| State | Zustand | Redux, Jotai |
+| Server State | TanStack Query | SWR |
+| Forms | React Hook Form + Zod | TanStack Form |
+| UI Library | ShadCN | Material-UI |
+| Testing | Vitest | Jest |
+| E2E | Playwright | Cypress |
+| Bundler | Vite | Webpack, Rollup |
+
+## TypeScript Naming Conventions
+
+| Type | Prefix | Example |
+|------|--------|---------|
+| `type` | `T` | `TUser`, `TApiResponse` |
+| `interface` | `I` | `IButtonProps`, `IAuthStore` |
+| `enum` | `E` | `EStatus`, `EUserRole` |
+
+```tsx
+// ✅ Correct naming
+type TUser = { id: string; name: string }
+interface IUserProps { user: TUser }
+enum EUserRole { Admin = 'admin', User = 'user' }
+
+// ❌ Avoid
+type User = { id: string; name: string }
+interface UserProps { user: User }
+enum UserRole { Admin = 'admin', User = 'user' }
+```
 
 ## Component Patterns
 
@@ -24,12 +52,12 @@ Modern frontend patterns for React, Next.js, and performant user interfaces.
 
 ```typescript
 // ✅ GOOD: Component composition
-interface CardProps {
+interface ICardProps {
   children: React.ReactNode
   variant?: 'default' | 'outlined'
 }
 
-export function Card({ children, variant = 'default' }: CardProps) {
+export function Card({ children, variant = 'default' }: ICardProps) {
   return <div className={`card card-${variant}`}>{children}</div>
 }
 
@@ -51,12 +79,12 @@ export function CardBody({ children }: { children: React.ReactNode }) {
 ### Compound Components
 
 ```typescript
-interface TabsContextValue {
+interface ITabsContextValue {
   activeTab: string
   setActiveTab: (tab: string) => void
 }
 
-const TabsContext = createContext<TabsContextValue | undefined>(undefined)
+const TabsContext = createContext<ITabsContextValue | undefined>(undefined)
 
 export function Tabs({ children, defaultTab }: {
   children: React.ReactNode
@@ -101,12 +129,12 @@ export function Tab({ id, children }: { id: string, children: React.ReactNode })
 ### Render Props Pattern
 
 ```typescript
-interface DataLoaderProps<T> {
+interface IDataLoaderProps<T> {
   url: string
   children: (data: T | null, loading: boolean, error: Error | null) => React.ReactNode
 }
 
-export function DataLoader<T>({ url, children }: DataLoaderProps<T>) {
+export function DataLoader<T>({ url, children }: IDataLoaderProps<T>) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
@@ -133,78 +161,6 @@ export function DataLoader<T>({ url, children }: DataLoaderProps<T>) {
 ```
 
 ## Custom Hooks Patterns
-
-### State Management Hook
-
-```typescript
-export function useToggle(initialValue = false): [boolean, () => void] {
-  const [value, setValue] = useState(initialValue)
-
-  const toggle = useCallback(() => {
-    setValue(v => !v)
-  }, [])
-
-  return [value, toggle]
-}
-
-// Usage
-const [isOpen, toggleOpen] = useToggle()
-```
-
-### Async Data Fetching Hook
-
-```typescript
-interface UseQueryOptions<T> {
-  onSuccess?: (data: T) => void
-  onError?: (error: Error) => void
-  enabled?: boolean
-}
-
-export function useQuery<T>(
-  key: string,
-  fetcher: () => Promise<T>,
-  options?: UseQueryOptions<T>
-) {
-  const [data, setData] = useState<T | null>(null)
-  const [error, setError] = useState<Error | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  const refetch = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-
-    try {
-      const result = await fetcher()
-      setData(result)
-      options?.onSuccess?.(result)
-    } catch (err) {
-      const error = err as Error
-      setError(error)
-      options?.onError?.(error)
-    } finally {
-      setLoading(false)
-    }
-  }, [fetcher, options])
-
-  useEffect(() => {
-    if (options?.enabled !== false) {
-      refetch()
-    }
-  }, [key, refetch, options?.enabled])
-
-  return { data, error, loading, refetch }
-}
-
-// Usage
-const { data: markets, loading, error, refetch } = useQuery(
-  'markets',
-  () => fetch('/api/markets').then(r => r.json()),
-  {
-    onSuccess: data => console.log('Fetched', data.length, 'markets'),
-    onError: err => console.error('Failed:', err)
-  }
-)
-```
 
 ### Debounce Hook
 
@@ -234,23 +190,80 @@ useEffect(() => {
 }, [debouncedQuery])
 ```
 
-## State Management Patterns
-
-### Context + Reducer Pattern
+### Toggle Hook
 
 ```typescript
-interface State {
+export function useToggle(initialValue = false): [boolean, () => void] {
+  const [value, setValue] = useState(initialValue)
+
+  const toggle = useCallback(() => {
+    setValue(v => !v)
+  }, [])
+
+  return [value, toggle]
+}
+
+// Usage
+const [isOpen, toggleOpen] = useToggle()
+```
+
+## State Management Patterns
+
+### Zustand (Global Client State)
+
+```typescript
+import { create } from 'zustand'
+
+interface IAuthStore {
+  user: TUser | null
+  setUser: (user: TUser) => void
+  logout: () => void
+}
+
+export const useAuthStore = create<IAuthStore>((set) => ({
+  user: null,
+  setUser: (user) => set({ user }),
+  logout: () => set({ user: null }),
+}))
+```
+
+### TanStack Query (Server State)
+
+```typescript
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+
+// Fetch data
+const { data, isLoading, error } = useQuery({
+  queryKey: ['users', userId],
+  queryFn: () => fetchUser(userId),
+  staleTime: 5 * 60 * 1000, // 5 minutes
+})
+
+// Mutate data
+const queryClient = useQueryClient()
+const mutation = useMutation({
+  mutationFn: updateUser,
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ['users'] })
+  },
+})
+```
+
+### Context + Reducer (Scoped State)
+
+```typescript
+interface IState {
   markets: Market[]
   selectedMarket: Market | null
   loading: boolean
 }
 
-type Action =
+type TAction =
   | { type: 'SET_MARKETS'; payload: Market[] }
   | { type: 'SELECT_MARKET'; payload: Market }
   | { type: 'SET_LOADING'; payload: boolean }
 
-function reducer(state: State, action: Action): State {
+function reducer(state: IState, action: TAction): IState {
   switch (action.type) {
     case 'SET_MARKETS':
       return { ...state, markets: action.payload }
@@ -264,8 +277,8 @@ function reducer(state: State, action: Action): State {
 }
 
 const MarketContext = createContext<{
-  state: State
-  dispatch: Dispatch<Action>
+  state: IState
+  dispatch: Dispatch<TAction>
 } | undefined>(undefined)
 
 export function MarketProvider({ children }: { children: React.ReactNode }) {
@@ -289,6 +302,112 @@ export function useMarkets() {
 }
 ```
 
+## Form Handling
+
+### React Hook Form + Zod (Recommended)
+
+```typescript
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
+
+const schema = z.object({
+  email: z.string().email('Invalid email'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+})
+
+type TFormData = z.infer<typeof schema>
+
+export const LoginForm = () => {
+  const { register, handleSubmit, formState: { errors } } = useForm<TFormData>({
+    resolver: zodResolver(schema),
+  })
+
+  const onSubmit = (data: TFormData) => {
+    // Handle submission
+  }
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <input {...register('email')} />
+      {errors.email && <span>{errors.email.message}</span>}
+      <input type="password" {...register('password')} />
+      {errors.password && <span>{errors.password.message}</span>}
+      <button type="submit">Login</button>
+    </form>
+  )
+}
+```
+
+### Controlled Form with Manual Validation
+
+```typescript
+interface IFormData {
+  name: string
+  description: string
+  endDate: string
+}
+
+interface IFormErrors {
+  name?: string
+  description?: string
+  endDate?: string
+}
+
+export function CreateMarketForm() {
+  const [formData, setFormData] = useState<IFormData>({
+    name: '',
+    description: '',
+    endDate: ''
+  })
+  const [errors, setErrors] = useState<IFormErrors>({})
+
+  const validate = (): boolean => {
+    const newErrors: IFormErrors = {}
+
+    if (!formData.name.trim()) {
+      newErrors.name = 'Name is required'
+    } else if (formData.name.length > 200) {
+      newErrors.name = 'Name must be under 200 characters'
+    }
+
+    if (!formData.description.trim()) {
+      newErrors.description = 'Description is required'
+    }
+
+    if (!formData.endDate) {
+      newErrors.endDate = 'End date is required'
+    }
+
+    setErrors(newErrors)
+    return Object.keys(newErrors).length === 0
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!validate()) return
+
+    try {
+      await createMarket(formData)
+    } catch (error) {
+      // Error handling
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input
+        value={formData.name}
+        onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
+        placeholder="Market name"
+      />
+      {errors.name && <span className="error">{errors.name}</span>}
+      <button type="submit">Create Market</button>
+    </form>
+  )
+}
+```
+
 ## Performance Optimization
 
 ### Memoization
@@ -305,7 +424,7 @@ const handleSearch = useCallback((query: string) => {
 }, [])
 
 // ✅ React.memo for pure components
-export const MarketCard = React.memo<MarketCardProps>(({ market }) => {
+export const MarketCard = React.memo<IMarketCardProps>(({ market }) => {
   return (
     <div className="market-card">
       <h3>{market.name}</h3>
@@ -320,7 +439,6 @@ export const MarketCard = React.memo<MarketCardProps>(({ market }) => {
 ```typescript
 import { lazy, Suspense } from 'react'
 
-// ✅ Lazy load heavy components
 const HeavyChart = lazy(() => import('./HeavyChart'))
 const ThreeJsBackground = lazy(() => import('./ThreeJsBackground'))
 
@@ -350,18 +468,13 @@ export function VirtualMarketList({ markets }: { markets: Market[] }) {
   const virtualizer = useVirtualizer({
     count: markets.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 100,  // Estimated row height
-    overscan: 5  // Extra items to render
+    estimateSize: () => 100,
+    overscan: 5
   })
 
   return (
     <div ref={parentRef} style={{ height: '600px', overflow: 'auto' }}>
-      <div
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-          position: 'relative'
-        }}
-      >
+      <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
         {virtualizer.getVirtualItems().map(virtualRow => (
           <div
             key={virtualRow.index}
@@ -383,101 +496,93 @@ export function VirtualMarketList({ markets }: { markets: Market[] }) {
 }
 ```
 
-## Form Handling Patterns
+## TanStack Start Patterns (Preferred Framework)
 
-### Controlled Form with Validation
+### Route Definition
 
-```typescript
-interface FormData {
-  name: string
-  description: string
-  endDate: string
+```tsx
+// app/routes/users.$userId.tsx
+import { createFileRoute } from '@tanstack/react-router'
+
+export const Route = createFileRoute('/users/$userId')({
+  loader: async ({ params }) => {
+    return fetchUser(params.userId)
+  },
+  component: UserProfile,
+})
+
+function UserProfile() {
+  const user = Route.useLoaderData()
+  return <div>{user.name}</div>
+}
+```
+
+### Server Functions
+
+```tsx
+import { createServerFn } from '@tanstack/start'
+
+const getUsers = createServerFn('GET', async () => {
+  return db.users.findMany()
+})
+
+const createUser = createServerFn('POST', async (data: TCreateUserInput) => {
+  return db.users.create({ data })
+})
+```
+
+## Next.js Patterns
+
+### Server vs Client Components
+
+```tsx
+// Server Component (default in App Router) — direct data fetching, no hooks
+async function UserProfile({ userId }: { userId: string }) {
+  const user = await fetchUser(userId)
+  return <div>{user.name}</div>
 }
 
-interface FormErrors {
-  name?: string
-  description?: string
-  endDate?: string
+// Client Component — for interactivity or browser APIs
+'use client'
+export function InteractiveCounter() {
+  const [count, setCount] = useState(0)
+  return <button onClick={() => setCount(c => c + 1)}>{count}</button>
+}
+```
+
+### Route Handlers
+
+```tsx
+// app/api/users/route.ts
+import { NextResponse } from 'next/server'
+
+export async function GET() {
+  const users = await db.users.findMany()
+  return NextResponse.json(users)
 }
 
-export function CreateMarketForm() {
-  const [formData, setFormData] = useState<FormData>({
-    name: '',
-    description: '',
-    endDate: ''
-  })
-
-  const [errors, setErrors] = useState<FormErrors>({})
-
-  const validate = (): boolean => {
-    const newErrors: FormErrors = {}
-
-    if (!formData.name.trim()) {
-      newErrors.name = 'Name is required'
-    } else if (formData.name.length > 200) {
-      newErrors.name = 'Name must be under 200 characters'
-    }
-
-    if (!formData.description.trim()) {
-      newErrors.description = 'Description is required'
-    }
-
-    if (!formData.endDate) {
-      newErrors.endDate = 'End date is required'
-    }
-
-    setErrors(newErrors)
-    return Object.keys(newErrors).length === 0
-  }
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-
-    if (!validate()) return
-
-    try {
-      await createMarket(formData)
-      // Success handling
-    } catch (error) {
-      // Error handling
-    }
-  }
-
-  return (
-    <form onSubmit={handleSubmit}>
-      <input
-        value={formData.name}
-        onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
-        placeholder="Market name"
-      />
-      {errors.name && <span className="error">{errors.name}</span>}
-
-      {/* Other fields */}
-
-      <button type="submit">Create Market</button>
-    </form>
-  )
+export async function POST(request: Request) {
+  const body = await request.json()
+  const user = await db.users.create({ data: body })
+  return NextResponse.json(user, { status: 201 })
 }
 ```
 
 ## Error Boundary Pattern
 
 ```typescript
-interface ErrorBoundaryState {
+interface IErrorBoundaryState {
   hasError: boolean
   error: Error | null
 }
 
 export class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
-  ErrorBoundaryState
+  IErrorBoundaryState
 > {
-  state: ErrorBoundaryState = {
-    hasError: false,
-    error: null
-  }
+  state: IErrorBoundaryState = { hasError: false, error: null }
 
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+  static getDerivedStateFromError(error: Error): IErrorBoundaryState {
     return { hasError: true, error }
   }
 
@@ -501,21 +606,16 @@ export class ErrorBoundary extends React.Component<
     return this.props.children
   }
 }
-
-// Usage
-<ErrorBoundary>
-  <App />
-</ErrorBoundary>
 ```
 
 ## Animation Patterns
 
-### Framer Motion Animations
+### Framer Motion
 
 ```typescript
 import { motion, AnimatePresence } from 'framer-motion'
 
-// ✅ List animations
+// List animations
 export function AnimatedMarketList({ markets }: { markets: Market[] }) {
   return (
     <AnimatePresence>
@@ -534,8 +634,8 @@ export function AnimatedMarketList({ markets }: { markets: Market[] }) {
   )
 }
 
-// ✅ Modal animations
-export function Modal({ isOpen, onClose, children }: ModalProps) {
+// Modal animations
+export function Modal({ isOpen, onClose, children }: IModalProps) {
   return (
     <AnimatePresence>
       {isOpen && (
@@ -567,7 +667,7 @@ export function Modal({ isOpen, onClose, children }: ModalProps) {
 ### Keyboard Navigation
 
 ```typescript
-export function Dropdown({ options, onSelect }: DropdownProps) {
+export function Dropdown({ options, onSelect }: IDropdownProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(0)
 
@@ -608,19 +708,15 @@ export function Dropdown({ options, onSelect }: DropdownProps) {
 ### Focus Management
 
 ```typescript
-export function Modal({ isOpen, onClose, children }: ModalProps) {
+export function AccessibleModal({ isOpen, onClose, children }: IModalProps) {
   const modalRef = useRef<HTMLDivElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     if (isOpen) {
-      // Save currently focused element
       previousFocusRef.current = document.activeElement as HTMLElement
-
-      // Focus modal
       modalRef.current?.focus()
     } else {
-      // Restore focus when closing
       previousFocusRef.current?.focus()
     }
   }, [isOpen])
@@ -639,4 +735,54 @@ export function Modal({ isOpen, onClose, children }: ModalProps) {
 }
 ```
 
-**Remember**: Modern frontend patterns enable maintainable, performant user interfaces. Choose patterns that fit your project complexity.
+## Testing
+
+### Unit Test (Vitest)
+
+```tsx
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
+
+describe('Button', () => {
+  it('calls onClick when clicked', () => {
+    const handleClick = vi.fn()
+    render(<Button onClick={handleClick}>Click me</Button>)
+
+    fireEvent.click(screen.getByText('Click me'))
+
+    expect(handleClick).toHaveBeenCalledOnce()
+  })
+})
+```
+
+### E2E Test (Playwright)
+
+```tsx
+import { test, expect } from '@playwright/test'
+
+test('user can login', async ({ page }) => {
+  await page.goto('/login')
+  await page.fill('[name="email"]', 'user@example.com')
+  await page.fill('[name="password"]', 'password123')
+  await page.click('button[type="submit"]')
+
+  await expect(page).toHaveURL('/dashboard')
+})
+```
+
+## CI/CD Checklist
+
+- [ ] TypeScript strict mode enabled
+- [ ] ESLint + Prettier configured
+- [ ] Unit tests passing (>80% coverage)
+- [ ] E2E tests passing
+- [ ] Bundle size within limits
+- [ ] Lighthouse score >90
+- [ ] Security scan (Snyk) passing
+
+## Additional Resources
+
+- For TanStack documentation, use the `tanstack_doc` MCP tool
+- For ShadCN components, use the `search_items_in_registries` MCP tool
+
+**Remember**: Choose patterns that fit your project complexity. Prefer TanStack Start for new projects; use Next.js patterns when working in the App Router.

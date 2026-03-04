@@ -9,6 +9,14 @@ paths:
 
 > This file extends [common/coding-style.md](../common/coding-style.md) with TypeScript/JavaScript specific content.
 
+## Naming Conventions
+
+| Type        | Prefix | Example                      |
+|-------------|--------|------------------------------|
+| `type`      | `T`    | `TUser`, `TApiResponse`      |
+| `interface` | `I`    | `IButtonProps`, `IAuthStore` |
+| `enum`      | `E`    | `EStatus`, `EUserRole`       |
+
 ## Immutability
 
 Use spread operator for immutable updates:
