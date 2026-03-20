@@ -52,6 +52,14 @@ DELETE /api/markets/:id             # Delete resource
 GET /api/markets?status=active&sort=volume&limit=20&offset=0
 ```
 
+### Validation & Response Contract
+
+- Any request with parameters must return `400 Bad Request` when validation fails.
+- Successful responses default to `200 OK` (unless protocol semantics explicitly require another status, e.g. `201 Created`).
+- Keep response format consistent:
+  - Success: `{ data }`
+  - Failure: `{ error: { code, message } }`
+
 ### Repository Pattern
 
 ```typescript
@@ -88,19 +96,65 @@ class SupabaseMarketRepository implements MarketRepository {
 ### Service Layer Pattern
 
 ```typescript
+// Error codes should be numeric, but named via const/enum
+export enum MarketServiceErrorCode {
+  INVALID_TASK_ID = 30001,
+  MARKET_INVALID_QUERY = 30002,
+  MARKET_NOT_FOUND = 30003,
+}
+
+// Controller maps errorCode -> protocol-specific HTTP errors
+// (and keeps response format as { data } / { error: { code, message } }).
 class MarketService {
   constructor(private marketRepo: MarketRepository) {}
 
   async searchMarkets(query: string, limit = 10): Promise<Market[]> {
-    const embedding = await generateEmbedding(query)
-    const results   = await this.vectorSearch(embedding, limit)
-    const markets   = await this.marketRepo.findByIds(results.map((r) => r.id))
+    if (!query.trim()) {
+      // Service throws only an Error whose message carries the errorCode
+      throw new Error(String(MarketServiceErrorCode.MARKET_INVALID_QUERY))
+    }
 
+    const embedding = await generateEmbedding(query)
+    const results = await this.vectorSearch(embedding, limit)
+
+    if (!results.length) {
+      throw new Error(String(MarketServiceErrorCode.MARKET_NOT_FOUND))
+    }
+
+    const markets = await this.marketRepo.findByIds(results.map((r) => r.id))
     return markets.sort((a, b) => {
       const scoreA = results.find((r) => r.id === a.id)?.score ?? 0
       const scoreB = results.find((r) => r.id === b.id)?.score ?? 0
       return scoreA - scoreB
     })
+  }
+}
+
+// Example (NestJS):
+// @Get('/markets/search')
+async function controllerSearch(query: SearchMarketsDto, marketService: MarketService) {
+  try {
+    const markets = await marketService.searchMarkets(query.q, query.limit)
+    return { data: markets }
+  } catch (e) {
+    const errorCode = Number((e as Error)?.message)
+
+    switch (errorCode) {
+      case MarketServiceErrorCode.MARKET_INVALID_QUERY:
+        throw new BadRequestException({
+          error: { code: errorCode, message: 'Query must not be empty' },
+        })
+
+      case MarketServiceErrorCode.MARKET_NOT_FOUND:
+        throw new NotFoundException({
+          error: { code: errorCode, message: 'No markets found' },
+        })
+
+      default:
+        throw new InternalServerErrorException({
+          error: { code: 50000, message: 'Unexpected error' },
+        })
+    }
   }
 }
 ```

@@ -106,3 +106,9 @@ interface Repository<T> {
   delete(id: string): Promise<void>
 }
 ```
+
+
+## Filename Convention
+
+- `source/` filenames: `camelCase` (example: `userProfile.ts`)
+- `scripts/` filenames: `kebab-case` (example: `build-assets.ts`)
