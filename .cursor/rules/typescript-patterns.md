@@ -108,5 +108,5 @@ interface Repository<T> {
 
 ## Filename Convention
 
-- `source/` filenames: `camelCase` (example: `userProfile.ts`)
+- `src/` filenames: `camelCase` (example: `userProfile.ts`)
 - `scripts/` filenames: `kebab-case` (example: `build-assets.ts`)
