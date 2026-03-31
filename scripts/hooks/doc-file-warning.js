@@ -1,28 +1,90 @@
+#!/usr/bin/env node
 /**
  * Doc file warning hook (PreToolUse - Write)
- * Warns about non-standard documentation files.
+ *
+ * Uses a denylist approach: only warn on known ad-hoc documentation
+ * filenames (NOTES, TODO, SCRATCH, etc.) outside structured directories.
+ * This avoids false positives for legitimate markdown-heavy workflows
+ * (specs, ADRs, command definitions, skill files, etc.).
+ *
+ * Policy ported from the intent of PR #962 into the current hook architecture.
  * Exit code 0 always (warns only, never blocks).
  */
 
-let data = '';
-process.stdin.on('data', c => (data += c));
-process.stdin.on('end', () => {
-  try {
-    const input = JSON.parse(data);
-    const filePath = input.tool_input?.file_path || '';
+'use strict';
 
-    if (
-      /\.(md|txt)$/.test(filePath) &&
-      !/(README|CLAUDE|AGENTS|CONTRIBUTING|CHANGELOG|LICENSE|SKILL)\.md$/i.test(filePath) &&
-      !/\.claude[/\\]plans[/\\]/.test(filePath) &&
-      !/(^|[/\\])(docs|skills|\.history)[/\\]/.test(filePath)
-    ) {
-      console.error('[Hook] WARNING: Non-standard documentation file detected');
-      console.error('[Hook] File: ' + filePath);
-      console.error('[Hook] Consider consolidating into README.md or docs/ directory');
-    }
+const path = require('path');
+
+const MAX_STDIN = 1024 * 1024;
+let data = '';
+
+// Known ad-hoc filenames that indicate impulse/scratch files (case-sensitive, uppercase only)
+const ADHOC_FILENAMES = /^(NOTES|TODO|SCRATCH|TEMP|DRAFT|BRAINSTORM|SPIKE|DEBUG|WIP)\.(md|txt)$/;
+
+// Structured directories where even ad-hoc names are intentional
+const STRUCTURED_DIRS = /(^|\/)(docs|\.claude|\.github|commands|skills|benchmarks|templates|\.history|memory)\//;
+
+function isSuspiciousDocPath(filePath) {
+  const normalized = filePath.replace(/\\/g, '/');
+  const basename = path.basename(normalized);
+
+  // Only inspect .md and .txt files (case-sensitive, consistent with ADHOC_FILENAMES)
+  if (!/\.(md|txt)$/.test(basename)) return false;
+
+  // Only flag known ad-hoc filenames
+  if (!ADHOC_FILENAMES.test(basename)) return false;
+
+  // Allow ad-hoc names inside structured directories (intentional usage)
+  if (STRUCTURED_DIRS.test(normalized)) return false;
+
+  return true;
+}
+
+/**
+ * Exportable run() for in-process execution via run-with-flags.js.
+ * Avoids the ~50-100ms spawnSync overhead when available.
+ */
+function run(inputOrRaw, _options = {}) {
+  let input;
+  try {
+    input = typeof inputOrRaw === 'string'
+      ? (inputOrRaw.trim() ? JSON.parse(inputOrRaw) : {})
+      : (inputOrRaw || {});
   } catch {
-    /* ignore parse errors */
+    return { exitCode: 0 };
   }
-  console.log(data);
+  const filePath = String(input?.tool_input?.file_path || '');
+
+  if (filePath && isSuspiciousDocPath(filePath)) {
+    return {
+      exitCode: 0,
+      stderr:
+        '[Hook] WARNING: Ad-hoc documentation filename detected\n' +
+        `[Hook] File: ${filePath}\n` +
+        '[Hook] Consider using a structured path (e.g. docs/, .claude/, skills/, .github/, benchmarks/, templates/)',
+    };
+  }
+
+  return { exitCode: 0 };
+}
+
+module.exports = { run };
+
+// Stdin fallback for spawnSync execution
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', c => {
+  if (data.length < MAX_STDIN) {
+    const remaining = MAX_STDIN - data.length;
+    data += c.substring(0, remaining);
+  }
+});
+
+process.stdin.on('end', () => {
+  const result = run(data);
+
+  if (result.stderr) {
+    process.stderr.write(result.stderr + '\n');
+  }
+
+  process.stdout.write(data);
 });

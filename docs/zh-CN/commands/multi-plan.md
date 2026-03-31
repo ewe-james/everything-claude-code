@@ -73,7 +73,7 @@ TaskOutput({ task_id: "<task_id>", block: true, timeout: 600000 })
 
 #### 1.1 提示增强（必须先执行）
 
-**必须调用 `mcp__ace-tool__enhance_prompt` 工具**：
+**如果 ace-tool MCP 可用**，调用 `mcp__ace-tool__enhance_prompt` 工具：
 
 ```
 mcp__ace-tool__enhance_prompt({
@@ -85,20 +85,28 @@ mcp__ace-tool__enhance_prompt({
 
 等待增强后的提示，**将所有后续阶段的原始 $ARGUMENTS 替换为增强结果**。
 
+**如果 ace-tool MCP 不可用**：跳过此步骤，并在所有后续阶段直接使用原始的 `$ARGUMENTS`。
+
 #### 1.2 上下文检索
 
-**调用 `mcp__ace-tool__search_context` 工具**：
+**如果 ace-tool MCP 可用**，调用 `mcp__ace-tool__search_context` 工具：
 
 ```
 mcp__ace-tool__search_context({
-  query: "<semantic query based on enhanced requirement>",
+  query: "<基于增强需求的语义查询>",
   project_root_path: "$PWD"
 })
 ```
 
-* 使用自然语言构建语义查询（Where/What/How）
-* **绝不基于假设回答**
-* 如果 MCP 不可用：回退到 Glob + Grep 进行文件发现和关键符号定位
+* 使用自然语言构建语义查询（在哪里/是什么/怎么样）
+* **切勿基于假设回答**
+
+**如果 ace-tool MCP 不可用**，使用 Claude Code 内置工具作为备用方案：
+
+1. **Glob**：通过模式查找相关文件（例如，`Glob("**/*.ts")`、`Glob("src/**/*.py")`）
+2. **Grep**：搜索关键符号、函数名、类定义（例如，`Grep("className|functionName")`）
+3. **Read**：读取发现的文件以收集完整的上下文
+4. **Task (Explore agent)**：要进行更深入的探索，使用 `Task` 并配合 `subagent_type: "Explore"` 来搜索整个代码库
 
 #### 1.3 完整性检查
 
@@ -201,11 +209,11 @@ mcp__ace-tool__search_context({
 
 3. 以 **粗体文本** 输出提示（必须使用实际保存的文件路径）：
 
-   ***
+***
 
-   **计划已生成并保存至 `.claude/plan/actual-feature-name.md`**
+**计划已生成并保存至 `.claude/plan/actual-feature-name.md`**
 
-   **请审阅以上计划。您可以：**
+**请审阅以上计划。您可以：**
 
    * **修改计划**：告诉我需要调整的内容，我会更新计划
    * **执行计划**：复制以下命令到新会话
@@ -214,9 +222,9 @@ mcp__ace-tool__search_context({
    /ccg:execute .claude/plan/actual-feature-name.md
    ```
 
-   ***
+***
 
-   **注意**：上面的 `actual-feature-name.md` 必须替换为实际保存的文件名！
+**注意**：上面的 `actual-feature-name.md` 必须替换为实际保存的文件名！
 
 4. **立即终止当前响应**（在此停止。不再进行工具调用。）
 
