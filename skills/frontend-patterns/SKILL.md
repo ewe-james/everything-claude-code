@@ -53,8 +53,6 @@ enum UserRole { Admin = 'admin', User = 'user' }
 ```typescript
 // ✅ GOOD: Component composition
 interface ICardProps {
-// PASS: GOOD: Component composition
-interface CardProps {
   children: React.ReactNode
   variant?: 'default' | 'outlined'
 }
@@ -415,20 +413,18 @@ export function CreateMarketForm() {
 ### Memoization
 
 ```typescript
-// PASS: useMemo for expensive computations
+// ✅ useMemo for expensive computations
 const sortedMarkets = useMemo(() => {
   return markets.sort((a, b) => b.volume - a.volume)
 }, [markets])
 
-// PASS: useCallback for functions passed to children
+// ✅ useCallback for functions passed to children
 const handleSearch = useCallback((query: string) => {
   setSearchQuery(query)
 }, [])
 
 // ✅ React.memo for pure components
 export const MarketCard = React.memo<IMarketCardProps>(({ market }) => {
-// PASS: React.memo for pure components
-export const MarketCard = React.memo<MarketCardProps>(({ market }) => {
   return (
     <div className="market-card">
       <h3>{market.name}</h3>
@@ -443,7 +439,6 @@ export const MarketCard = React.memo<MarketCardProps>(({ market }) => {
 ```typescript
 import { lazy, Suspense } from 'react'
 
-// PASS: Lazy load heavy components
 const HeavyChart = lazy(() => import('./HeavyChart'))
 const ThreeJsBackground = lazy(() => import('./ThreeJsBackground'))
 
@@ -621,7 +616,6 @@ export class ErrorBoundary extends React.Component<
 import { motion, AnimatePresence } from 'framer-motion'
 
 // List animations
-// PASS: List animations
 export function AnimatedMarketList({ markets }: { markets: Market[] }) {
   return (
     <AnimatePresence>
@@ -642,8 +636,6 @@ export function AnimatedMarketList({ markets }: { markets: Market[] }) {
 
 // Modal animations
 export function Modal({ isOpen, onClose, children }: IModalProps) {
-// PASS: Modal animations
-export function Modal({ isOpen, onClose, children }: ModalProps) {
   return (
     <AnimatePresence>
       {isOpen && (

@@ -40,7 +40,7 @@ Backend architecture patterns and best practices for scalable server-side applic
 ### RESTful API Structure
 
 ```typescript
-// PASS: Resource-based URLs
+// ✅ Resource-based URLs
 GET    /api/markets                 # List resources
 GET    /api/markets/:id             # Get single resource
 POST   /api/markets                 # Create resource
@@ -48,7 +48,7 @@ PUT    /api/markets/:id             # Replace resource
 PATCH  /api/markets/:id             # Update resource
 DELETE /api/markets/:id             # Delete resource
 
-// PASS: Query parameters for filtering, sorting, pagination
+// ✅ Query parameters for filtering, sorting, pagination
 GET /api/markets?status=active&sort=volume&limit=20&offset=0
 ```
 
@@ -542,25 +542,12 @@ export class MarketRepository {
   exports: ['DATABASE'],
 })
 export class DbModule {}
-// PASS: GOOD: Select only needed columns
-const { data } = await supabase
-  .from('markets')
-  .select('id, name, status, volume')
-  .eq('status', 'active')
-  .order('volume', { ascending: false })
-  .limit(10)
-
-// FAIL: BAD: Select everything
-const { data } = await supabase
-  .from('markets')
-  .select('*')
 ```
 
 ### N+1 Query Prevention
 
 ```typescript
 // ❌ BAD: N+1
-// FAIL: BAD: N+1 query problem
 const markets = await getMarkets()
 for (const market of markets) {
   market.creator = await getUser(market.creator_id)
@@ -573,11 +560,6 @@ const creators   = await this.db
   .select()
   .from(users)
   .where(inArray(users.id, creatorIds))
-// PASS: GOOD: Batch fetch
-const markets = await getMarkets()
-const creatorIds = markets.map(m => m.creator_id)
-const creators = await getUsers(creatorIds)  // 1 query
-const creatorMap = new Map(creators.map(c => [c.id, c]))
 
 const creatorMap = new Map(creators.map((c) => [c.id, c]))
 markets.forEach((m) => { m.creator = creatorMap.get(m.creator_id) })
