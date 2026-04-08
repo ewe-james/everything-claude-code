@@ -1,37 +1,31 @@
 ---
 name: backend-patterns
-description: Backend architecture patterns, gRPC service design, API design, database optimization, message queues, cloud deployment, monitoring, and server-side best practices for Node.js, Nest.js, Express, and Next.js API routes.
-origin: ECC
+description: Core NestJS patterns for reward-system — Drizzle ORM (MySQL), Zod validation, service layer error codes with BusinessExceptionFilter, TransactionRunner for atomic operations, Pino logging, and JWT auth guards.
+origin: EWE
 ---
 
 # Backend Development Patterns
 
-Backend architecture patterns and best practices for scalable server-side applications.
-
-## Tech Stack Preference
-
-| Concern        | Primary              | Fallback            |
-|----------------|----------------------|---------------------|
-| Framework      | NestJS               | Express → Koa       |
-| Validation     | Zod                  | —                   |
-| ORM            | Drizzle              | —                   |
-| Message Queue  | Kafka                | RabbitMQ → ActiveMQ |
-| Cloud          | GCP                  | AWS                 |
-| Monitoring     | Prometheus + Grafana | —                   |
+Core NestJS patterns for reward-system — REST APIs, Drizzle ORM (MySQL), Zod validation, transactional operations, structured error handling, and Pino logging.
 
 ## When to Activate
 
-- Designing gRPC services or proto files
-- Designing REST or GraphQL API endpoints
-- Implementing repository, service, or controller layers
-- Optimizing database queries (N+1, indexing, connection pooling) with Drizzle ORM
-- Adding caching (Redis, in-memory, HTTP cache headers)
-- Setting up background jobs or async processing with Kafka / RabbitMQ / ActiveMQ
-- Structuring error handling and validation for APIs (Zod)
-- Building interceptors for auth, logging, rate limiting
-- Deploying services to GCP (Cloud Run / GKE) or AWS (ECS / EKS)
-- Instrumenting services with Prometheus metrics and Grafana dashboards
-- Building middleware (auth, logging, rate limiting)
+- Implementing a NestJS controller, service, or repository
+- Defining a Drizzle schema (MySQL tables, indexes, relations)
+- Structuring error codes and exception handling
+- Implementing multi-step atomic operations with `TransactionRunner`
+- Writing Zod validation for request body or query params
+- Setting up offset pagination
+- Adding JWT auth guard or extracting user context
+
+## Related Skills
+
+- **caching-patterns** — Redis cache-aside, in-memory cache, HTTP cache headers
+- **rate-limiting** — NestJS Throttler, in-memory sliding window, Redis-backed distributed limiting
+- **grpc-patterns** — Proto file design, NestJS gRPC controllers, Zod/exception mapping
+- **message-queue-patterns** — Kafka / RabbitMQ / ActiveMQ producer & consumer setup
+- **monitoring-patterns** — Prometheus metrics, Grafana dashboards, PromQL queries
+- **cloud-deployment** — GCP Cloud Run, AWS ECS/Fargate, multi-stage Dockerfile
 
 ---
 
@@ -62,386 +56,103 @@ GET /api/markets?status=active&sort=volume&limit=20&offset=0
 
 ### Repository Pattern
 
+One repository class per table, injected via `DRIZZLE` token. The contract is defined as an interface; all write methods accept `tx?: TDrizzleTransaction` to participate in transactions.
+
 ```typescript
-interface MarketRepository {
-  findAll(filters?: MarketFilters): Promise<Market[]>
-  findById(id: string): Promise<Market | null>
-  create(data: CreateMarketDto): Promise<Market>
-  update(id: string, data: UpdateMarketDto): Promise<Market>
-  delete(id: string): Promise<void>
-}
-
-class SupabaseMarketRepository implements MarketRepository {
-  async findAll(filters?: MarketFilters): Promise<Market[]> {
-    let query = supabase.from('markets').select('*')
-
-    if (filters?.status) {
-      query = query.eq('status', filters.status)
-    }
-
-    if (filters?.limit) {
-      query = query.limit(filters.limit)
-    }
-
-    const { data, error } = await query
-
-    if (error) throw new Error(error.message)
-    return data
-  }
-
-  // Other methods...
+interface IActivityRepository {
+  findByUserId(userId: string, limit: number, offset: number): Promise<TActivity[]>
+  countByUserId(userId: string): Promise<number>
+  create(data: TNewActivity, tx?: TDrizzleTransaction): Promise<void>
 }
 ```
 
-### Service Layer Pattern
+See **Database Patterns** for the full Drizzle implementation, `TransactionRunner`, N+1 prevention, and pagination.
+
+### Service Layer & Error Codes
+
+Each module defines a string enum and an error map. Services throw `new Error(ErrorKey)`. The global `BusinessExceptionFilter` maps the key to the correct HTTP response — no try/catch needed in controllers.
 
 ```typescript
-// Error codes should be numeric, but named via const/enum
-export enum MarketServiceErrorCode {
-  INVALID_TASK_ID = 30001,
-  MARKET_INVALID_QUERY = 30002,
-  MARKET_NOT_FOUND = 30003,
+// modules/activity/errors.ts
+export enum ActivityErrorCode {
+  ALREADY_QUEUED = 'ALREADY_QUEUED',
+  ALREADY_VERIFIED = 'ALREADY_VERIFIED'
 }
 
-// Controller maps errorCode -> protocol-specific HTTP errors
-// (and keeps response format as { data } / { error: { code, message } }).
-class MarketService {
-  constructor(private marketRepo: MarketRepository) {}
-
-  async searchMarkets(query: string, limit = 10): Promise<Market[]> {
-    if (!query.trim()) {
-      // Service throws only an Error whose message carries the errorCode
-      throw new Error(String(MarketServiceErrorCode.MARKET_INVALID_QUERY))
-    }
-
-    const embedding = await generateEmbedding(query)
-    const results = await this.vectorSearch(embedding, limit)
-
-    if (!results.length) {
-      throw new Error(String(MarketServiceErrorCode.MARKET_NOT_FOUND))
-    }
-
-    const markets = await this.marketRepo.findByIds(results.map((r) => r.id))
-    return markets.sort((a, b) => {
-      const scoreA = results.find((r) => r.id === a.id)?.score ?? 0
-      const scoreB = results.find((r) => r.id === b.id)?.score ?? 0
-      return scoreA - scoreB
-    })
-  }
-}
-
-// Example (NestJS):
-// @Get('/markets/search')
-async function controllerSearch(query: SearchMarketsDto, marketService: MarketService) {
-  try {
-    const markets = await marketService.searchMarkets(query.q, query.limit)
-    return { data: markets }
-  } catch (e) {
-    const errorCode = Number((e as Error)?.message)
-
-    switch (errorCode) {
-      case MarketServiceErrorCode.MARKET_INVALID_QUERY:
-        throw new BadRequestException({
-          error: { code: errorCode, message: 'Query must not be empty' },
-        })
-
-      case MarketServiceErrorCode.MARKET_NOT_FOUND:
-        throw new NotFoundException({
-          error: { code: errorCode, message: 'No markets found' },
-        })
-
-      default:
-        throw new InternalServerErrorException({
-          error: { code: 50000, message: 'Unexpected error' },
-        })
-    }
-  }
-}
-```
-
-### Middleware Pattern
-
-```typescript
-export function withAuth(handler: NextApiHandler): NextApiHandler {
-  return async (req, res) => {
-    const token = req.headers.authorization?.replace('Bearer ', '')
-    if (!token) return res.status(401).json({ error: 'Unauthorized' })
-
-    try {
-      req.user = await verifyToken(token)
-      return handler(req, res)
-    } catch {
-      return res.status(401).json({ error: 'Invalid token' })
-    }
-  }
-}
-```
-
----
-
-## gRPC — Proto File Design
-
-```proto
-// market.proto
-syntax = "proto3";
-package market.v1;
-
-import "google/protobuf/timestamp.proto";
-import "google/protobuf/wrappers.proto";
-
-// ✅ PascalCase messages, SCREAMING_SNAKE enums
-// ✅ Version the package — never break a published package
-// ✅ Use google.protobuf.Timestamp for dates, never plain strings
-// ✅ Use oneof for sum types instead of nullable fields
-// ✅ Reserve deprecated field numbers to prevent reuse
-
-enum MarketStatus {
-  MARKET_STATUS_UNSPECIFIED = 0;
-  MARKET_STATUS_ACTIVE      = 1;
-  MARKET_STATUS_CLOSED      = 2;
-  MARKET_STATUS_RESOLVED    = 3;
-}
-
-message Market {
-  string                    id         = 1;
-  string                    title      = 2;
-  MarketStatus              status     = 3;
-  google.protobuf.Timestamp created_at = 4;
-  google.protobuf.Timestamp updated_at = 5;
-}
-
-message GetMarketRequest  { string id = 1; }
-message GetMarketResponse { Market market = 1; }
-
-message ListMarketsRequest {
-  MarketStatus status = 1;
-  int32        page   = 2;
-  int32        limit  = 3;
-}
-message ListMarketsResponse {
-  repeated Market markets   = 1;
-  int32           total     = 2;
-  int32           next_page = 3;
-}
-
-// Optional field via wrapper type (proto3 has no null)
-message UpdateMarketRequest {
-  string                      id          = 1;
-  google.protobuf.StringValue title       = 2;
-  google.protobuf.Int32Value  max_traders = 3;
-}
-
-// Deprecated field reservation
-message OldMessage {
-  reserved 5, 10 to 12;
-  reserved "deprecated_field";
-}
-
-service MarketService {
-  rpc GetMarket    (GetMarketRequest)   returns (GetMarketResponse);
-  rpc ListMarkets  (ListMarketsRequest) returns (ListMarketsResponse);
-  rpc WatchMarkets (ListMarketsRequest) returns (stream Market);  // server-stream
-}
-```
-
-## gRPC — NestJS Setup
-
-### Module Configuration
-
-```typescript
-// app.module.ts
-ClientsModule.register([{
-  name: 'MARKET_SERVICE',
-  transport: Transport.GRPC,
-  options: {
-    url:       process.env.MARKET_SERVICE_URL ?? 'localhost:50051',
-    package:   'market.v1',
-    protoPath: join(__dirname, '../proto/market.proto'),
-    channelOptions: {
-      'grpc.keepalive_time_ms':          30_000,
-      'grpc.keepalive_timeout_ms':       10_000,
-      'grpc.max_receive_message_length': 10 * 1024 * 1024,
-    },
+export const ACTIVITY_ERRORS: Record<string, ErrorEntry> = {
+  [ActivityErrorCode.ALREADY_QUEUED]: {
+    code: 50001, // 50xxx = activity module range
+    status: HttpStatus.CONFLICT,
+    message: 'This transaction is already in the verification queue.'
   },
-}])
-```
-
-### Server Controller
-
-```typescript
-// market.controller.ts
-@Controller()
-export class MarketController {
-  constructor(private readonly marketService: MarketService) {}
-
-  @GrpcMethod('MarketService', 'GetMarket')
-  async getMarket(data: unknown) {
-    const req = GetMarketRequestSchema.parse(data)        // Zod at boundary
-    return this.marketService.getMarket(req.id)
-  }
-
-  @GrpcMethod('MarketService', 'ListMarkets')
-  async listMarkets(data: unknown) {
-    const req = ListMarketsRequestSchema.parse(data)
-    return this.marketService.listMarkets(req)
-  }
-
-  @GrpcStreamMethod('MarketService', 'WatchMarkets')
-  watchMarkets(data$: Observable<unknown>): Observable<Market> {
-    const subject = new Subject<Market>()
-    data$.subscribe({
-      next:  (data) => {
-        const req = ListMarketsRequestSchema.parse(data)
-        this.marketService.streamMarkets(req, subject)
-          .catch((err) => subject.error(err))
-      },
-      error: (err) => subject.error(err),
-    })
-    return subject.asObservable()
+  [ActivityErrorCode.ALREADY_VERIFIED]: {
+    code: 50002,
+    status: HttpStatus.CONFLICT,
+    message: 'This transaction has already been verified.'
   }
 }
 ```
 
-### Client Consumer
+```typescript
+// common/exceptions/errorMapping.ts — merge all module maps here
+export const ERROR_MAP: Record<string, ErrorEntry> = {
+  ...COMMON_ERRORS, // 10xxx
+  ...PROFILE_ERRORS, // 20xxx
+  ...SPIN_ERRORS, // 30xxx
+  ...CHECKIN_ERRORS, // 40xxx
+  ...ACTIVITY_ERRORS // 50xxx
+  // 90xxx — system errors
+}
+```
 
 ```typescript
-// market.client.ts
+// Service — throws enum key only, no HTTP knowledge
+async submitTransaction(userId: string, txHash: string) {
+  const existing = await this.pendingTxRepo.findByHash(txHash)
+  if (existing) throw new Error(ActivityErrorCode.ALREADY_QUEUED)
+  // ...
+}
+```
+
+Controller stays clean — no try/catch:
+
+```typescript
+@Auth()
+@Post('transactions')
+async saveTransaction(@Body() body: unknown): Promise<{ data: TPendingTransaction }> {
+  const parsed = SaveTransactionSchema.safeParse(body)
+  if (!parsed.success) throw new BadRequestException({ errors: parsed.error.flatten() })
+  return { data: await this.activityService.save(parsed.data) }
+}
+```
+
+### Auth Guard Pattern
+
+Use a custom `@Auth()` decorator backed by a NestJS guard to protect routes and extract the JWT payload.
+
+```typescript
+// auth/auth.decorator.ts
+export const Auth = () => UseGuards(JwtAuthGuard)
+
+// auth/jwt.guard.ts
 @Injectable()
-export class MarketClient implements OnModuleInit {
-  private grpc!: MarketGrpcService
-
-  constructor(@Inject('MARKET_SERVICE') private client: ClientGrpc) {}
-
-  onModuleInit() {
-    this.grpc = this.client.getService<MarketGrpcService>('MarketService')
-  }
-
-  getMarket(id: string) {
-    return firstValueFrom(this.grpc.getMarket({ id }))
-  }
-
-  listMarkets(req: ListMarketsRequest) {
-    return firstValueFrom(this.grpc.listMarkets(req))
-  }
-}
-```
-
-## gRPC — Zod Validation & Exception Mapping
-
-```typescript
-// market.schema.ts
-export const MarketStatusSchema = z.enum([
-  'MARKET_STATUS_UNSPECIFIED',
-  'MARKET_STATUS_ACTIVE',
-  'MARKET_STATUS_CLOSED',
-  'MARKET_STATUS_RESOLVED',
-])
-
-export const GetMarketRequestSchema = z.object({
-  id: z.string().uuid(),
-})
-
-export const ListMarketsRequestSchema = z.object({
-  status: MarketStatusSchema.default('MARKET_STATUS_UNSPECIFIED'),
-  page:   z.number().int().min(1).default(1),
-  limit:  z.number().int().min(1).max(100).default(20),
-})
-
-export const CreateMarketRequestSchema = z.object({
-  title:      z.string().min(3).max(255),
-  maxTraders: z.number().int().positive().optional(),
-  closesAt:   z.string().datetime().optional(),
-})
-
-export type TGetMarketRequest    = z.infer<typeof GetMarketRequestSchema>
-export type TListMarketsRequest  = z.infer<typeof ListMarketsRequestSchema>
-export type TCreateMarketRequest = z.infer<typeof CreateMarketRequestSchema>
-```
-
-```typescript
-// grpc-exception.filter.ts
-@Catch()
-export class GrpcExceptionFilter implements RpcExceptionFilter {
-  catch(exception: unknown): Observable<never> {
-    if (exception instanceof ZodError) {
-      return throwError(() => ({
-        code:    GrpcStatus.INVALID_ARGUMENT,
-        message: 'Validation failed',
-        details: exception.errors
-          .map((e) => `${e.path.join('.')}: ${e.message}`)
-          .join('; '),
-      }))
-    }
-
-    if (exception instanceof RpcException) {
-      return throwError(() => exception.getError())
-    }
-
-    return throwError(() => ({
-      code:    GrpcStatus.INTERNAL,
-      message: 'Internal server error',
-    }))
+export class JwtAuthGuard implements CanActivate {
+  canActivate(ctx: ExecutionContext): boolean {
+    const req = ctx.switchToHttp().getRequest()
+    const token = req.headers.authorization?.replace('Bearer ', '')
+    if (!token) throw new UnauthorizedException()
+    req.user = verifyToken(token); // throws on invalid token
+    return true
   }
 }
 
-// gRPC status → HTTP status (for REST gateway)
-export const grpcToHttpStatus: Record<number, number> = {
-  [GrpcStatus.OK]:                 200,
-  [GrpcStatus.INVALID_ARGUMENT]:   400,
-  [GrpcStatus.UNAUTHENTICATED]:    401,
-  [GrpcStatus.PERMISSION_DENIED]:  403,
-  [GrpcStatus.NOT_FOUND]:          404,
-  [GrpcStatus.ALREADY_EXISTS]:     409,
-  [GrpcStatus.RESOURCE_EXHAUSTED]: 429,
-  [GrpcStatus.UNAVAILABLE]:        503,
-  [GrpcStatus.INTERNAL]:           500,
-}
-```
-
-## gRPC — Interceptors
-
-```typescript
-// auth.interceptor.ts
-@Injectable()
-export class GrpcAuthInterceptor implements NestInterceptor {
-  intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const metadata = ctx.switchToRpc().getContext()
-    const token    = metadata.get('authorization')?.[0]
-      ?.toString()
-      ?.replace('Bearer ', '')
-
-    if (!token) {
-      throw new RpcException({ code: GrpcStatus.UNAUTHENTICATED, message: 'Missing token' })
-    }
-
-    try {
-      const user = verifyToken(token)
-      metadata.set('user-id', user.id)
-    } catch {
-      throw new RpcException({ code: GrpcStatus.UNAUTHENTICATED, message: 'Invalid token' })
-    }
-
-    return next.handle()
-  }
-}
-```
-
-```typescript
-// logging.interceptor.ts
-@Injectable()
-export class GrpcLoggingInterceptor implements NestInterceptor {
-  private readonly logger = new Logger('gRPC')
-
-  intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const method = `${ctx.getClass().name}.${ctx.getHandler().name}`
-    const start  = Date.now()
-
-    return next.handle().pipe(
-      tap({
-        next:  ()  => this.logger.log({ method, duration: Date.now() - start, status: 'OK' }),
-        error: (e) => this.logger.error({ method, duration: Date.now() - start, code: e?.code }),
-      }),
-    )
+// Controller usage
+@Controller('activity')
+export class ActivityController {
+  @Auth()
+  @Get()
+  async getActivity(@Ctx() ctx: AuthPayload): Promise<{ data: TActivityResponse }> {
+    return { data: await this.activityService.getActivity(ctx.userId!) }
   }
 }
 ```
@@ -450,287 +161,206 @@ export class GrpcLoggingInterceptor implements NestInterceptor {
 
 ## Database Patterns — Drizzle ORM
 
-### Schema Definition
+### Schema Definition (MySQL)
 
 ```typescript
-// db/schema.ts
-import { pgTable, uuid, varchar, pgEnum, timestamp, integer } from 'drizzle-orm/pg-core'
+// database/schema/activities.schema.ts
+import { mysqlTable, char, varchar, bigint, datetime, index, sql } from 'drizzle-orm/mysql-core'
 
-export const marketStatusEnum = pgEnum('market_status', ['active', 'closed', 'resolved'])
+export const activities = mysqlTable(
+  'activities',
+  {
+    id: char('id', { length: 36 }).primaryKey(),
+    userId: char('user_id', { length: 36 }).notNull(),
+    address: varchar('address', { length: 128 }).notNull(),
+    taskId: char('task_id', { length: 36 }).references(() => simpleTasks.id),
+    stars: bigint('stars', { mode: 'number' }).notNull(),
+    createdAt: datetime('created_at')
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`)
+  },
+  table => [
+    index('activities_user_id_idx').on(table.userId),
+    index('activities_task_id_idx').on(table.taskId),
+    index('activities_created_at_idx').on(table.createdAt),
+  ]
+)
 
-export const markets = pgTable('markets', {
-  id:         uuid('id').defaultRandom().primaryKey(),
-  title:      varchar('title', { length: 255 }).notNull(),
-  status:     marketStatusEnum('status').notNull().default('active'),
-  maxTraders: integer('max_traders'),
-  createdAt:  timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  updatedAt:  timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-})
-
-export type TMarket    = typeof markets.$inferSelect
-export type TNewMarket = typeof markets.$inferInsert
+export type TActivity = typeof activities.$inferSelect
+export type TNewActivity = typeof activities.$inferInsert
 ```
 
-### Repository Pattern
+Key points:
+
+- Use `char` for UUID/fixed-length IDs, `varchar` for variable strings, `datetime` for timestamps
+- Export `$inferSelect` / `$inferInsert` types — never define types manually
+- All schema files exported from `database/schema/index.ts`
+
+**Indexing rules — decide for every new table:**
+
+- Index every column used in `WHERE`, `ORDER BY`, or `JOIN ON`
+- Composite index: equality column first, then range/sort column (e.g. `userId + createdAt`)
+- Add `unique()` for business-level uniqueness constraints (e.g. `txHash`)
+- Skip indexing low-cardinality columns on write-heavy tables (e.g. a boolean `isActive`)
+
+### Repository Implementation (Drizzle + MySQL)
 
 ```typescript
-// market.repository.ts
+// modules/activity/activity.repository.ts
 @Injectable()
-export class MarketRepository {
-  constructor(@InjectDatabase() private db: NodePgDatabase) {}
+export class ActivityRepository {
+  constructor(@Inject(DRIZZLE) private readonly db: MySql2Database<typeof schema>) {}
 
-  async findById(id: string) {
-    const [market] = await this.db
-      .select()
-      .from(markets)
-      .where(eq(markets.id, id))
-      .limit(1)
-    return market ?? null
+  async findByUserId(userId: string, limit: number, offset: number) {
+    return this.db
+      .select({
+        id: schema.activities.id,
+        taskName: schema.simpleTasks.name,
+        stars: schema.activities.stars,
+        createdAt: schema.activities.createdAt
+      })
+      .from(schema.activities)
+      .leftJoin(schema.simpleTasks, eq(schema.activities.taskId, schema.simpleTasks.id))
+      .where(eq(schema.activities.userId, userId))
+      .orderBy(desc(schema.activities.createdAt))
+      .limit(limit)
+      .offset(offset)
   }
 
-  async findMany(req: TListMarketsRequest) {
-    const offset     = (req.page - 1) * req.limit
-    const conditions = []
-
-    if (req.status !== 'MARKET_STATUS_UNSPECIFIED') {
-      const dbStatus = req.status.replace('MARKET_STATUS_', '').toLowerCase()
-      conditions.push(eq(markets.status, dbStatus as 'active' | 'closed' | 'resolved'))
-    }
-
-    const where = conditions.length ? and(...conditions) : undefined
-
-    const [rows, [{ count }]] = await Promise.all([
-      this.db.select().from(markets).where(where).limit(req.limit).offset(offset),
-      this.db.select({ count: sql<number>`count(*)::int` }).from(markets).where(where),
-    ])
-
-    return { rows, total: count }
+  async countByUserId(userId: string): Promise<number> {
+    const [{ count }] = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.activities)
+      .where(eq(schema.activities.userId, userId))
+    return count
   }
 
-  async create(data: TNewMarket) {
-    const [market] = await this.db.insert(markets).values(data).returning()
-    return market
+  async create(data: TNewActivity, tx?: TDrizzleTransaction) {
+    const executor = tx ?? this.db
+    await executor.insert(schema.activities).values(data)
   }
 
-  async update(id: string, patch: Partial<TNewMarket>) {
-    const [market] = await this.db
-      .update(markets)
-      .set({ ...patch, updatedAt: new Date() })
-      .where(eq(markets.id, id))
-      .returning()
-    return market ?? null
+  // SELECT FOR UPDATE — prevents concurrent writes to the same row
+  async findForUpdate(id: string, tx: TDrizzleTransaction) {
+    const [row] = await tx.select().from(schema.activities).where(eq(schema.activities.id, id)).limit(1).for('update')
+    return row ?? null
   }
 }
 ```
 
-### DB Module (Connection Pool)
+Rules:
+
+- Always select specific columns — never `select()` with no arguments in production queries
+- Every write method takes `tx?: TDrizzleTransaction`; use `const executor = tx ?? this.db`
+- Use `.for('update')` inside transactions to prevent concurrent modification
+
+### DB Module (MySQL Connection Pool)
 
 ```typescript
-// db.module.ts
+// database/drizzle.module.ts
 @Global()
 @Module({
-  providers: [{
-    provide: 'DATABASE',
-    useFactory: () =>
-      drizzle(new Pool({
-        connectionString:        process.env.DATABASE_URL,
-        max:                     20,
-        idleTimeoutMillis:       30_000,
-        connectionTimeoutMillis: 5_000,
-      })),
-  }],
-  exports: ['DATABASE'],
+  providers: [
+    {
+      provide: DRIZZLE,
+      useFactory: () =>
+        drizzle(
+          mysql.createPool({
+            uri: process.env.DATABASE_URL,
+            connectionLimit: 20,
+            waitForConnections: true,
+            idleTimeout: 30_000
+          }),
+          { schema, mode: 'default' }
+        )
+    },
+    TransactionRunner
+  ],
+  exports: [DRIZZLE, TransactionRunner]
 })
-export class DbModule {}
+export class DrizzleModule {}
+```
+
+### TransactionRunner — Atomic Multi-Step Operations
+
+Wrap multiple repository calls in a single database transaction. All repositories accept `tx?` to participate.
+
+```typescript
+// database/transactionRunner.service.ts
+@Injectable()
+export class TransactionRunner {
+  constructor(@Inject(DRIZZLE) private readonly db: TDrizzleDb) {}
+
+  run<T>(fn: (tx: TDrizzleTransaction) => Promise<T>): Promise<T> {
+    return this.db.transaction(fn)
+  }
+}
+```
+
+```typescript
+// Usage in a service — all steps are atomic
+const result = await this.transactionRunner.run(async tx => {
+  const credits = await this.tasksRepo.findCredits(userId, { tx, forUpdate: true })
+  if (credits <= 0) return null
+
+  await this.tasksRepo.consumeCredit(userId, tx)
+  await this.profileRepo.incrementStars(userId, amount, tx)
+  await this.activityRepo.create({ userId, stars: amount }, tx)
+
+  return this.profileRepo.findProfile(userId, { tx })
+})
 ```
 
 ### N+1 Query Prevention
 
 ```typescript
-// ❌ BAD: N+1
-const markets = await getMarkets()
-for (const market of markets) {
-  market.creator = await getUser(market.creator_id)
+// ❌ BAD: N+1 — one query per activity
+const activities = await this.activityRepo.findByUserId(userId)
+for (const activity of activities) {
+  activity.taskName = await this.tasksRepo.findName(activity.taskId)
 }
 
-// ✅ GOOD: batch fetch
-const markets    = await getMarkets()
-const creatorIds = markets.map((m) => m.creator_id)
-const creators   = await this.db
-  .select()
-  .from(users)
-  .where(inArray(users.id, creatorIds))
+// ✅ GOOD: leftJoin in the repository (preferred — see Repository Implementation above)
+// Alternative when JOIN isn't feasible — batch by IDs:
+const taskIds = activities.map(a => a.taskId).filter(Boolean)
+const tasks = await this.db.select({ id: schema.simpleTasks.id, name: schema.simpleTasks.name }).from(schema.simpleTasks).where(inArray(schema.simpleTasks.id, taskIds))
 
-const creatorMap = new Map(creators.map((c) => [c.id, c]))
-markets.forEach((m) => { m.creator = creatorMap.get(m.creator_id) })
-```
-
----
-
-## Message Queue Patterns
-
-### Kafka (Primary)
-
-```typescript
-// kafka.module.ts
-ClientsModule.register([{
-  name: 'KAFKA_CLIENT',
-  transport: Transport.KAFKA,
-  options: {
-    client: {
-      clientId: 'market-service',
-      brokers:  (process.env.KAFKA_BROKERS ?? 'localhost:9092').split(','),
-      ssl:      process.env.NODE_ENV === 'production',
-      sasl: process.env.KAFKA_SASL_USERNAME
-        ? {
-            mechanism: 'scram-sha-512',
-            username:  process.env.KAFKA_SASL_USERNAME,
-            password:  process.env.KAFKA_SASL_PASSWORD!,
-          }
-        : undefined,
-    },
-    consumer: { groupId: 'market-service-group' },
-    producer: { createPartitioner: Partitioners.LegacyPartitioner },
-  },
-}])
-```
-
-```typescript
-// market-events.producer.ts
-export const MarketCreatedEventSchema = z.object({
-  eventType: z.literal('market.created'),
-  marketId:  z.string().uuid(),
-  title:     z.string(),
-  createdAt: z.string().datetime(),
+const taskMap = new Map(tasks.map(t => [t.id, t.name]))
+activities.forEach(a => {
+  a.taskName = taskMap.get(a.taskId)
 })
-
-export type TMarketCreatedEvent = z.infer<typeof MarketCreatedEventSchema>
-
-@Injectable()
-export class MarketEventsProducer {
-  constructor(@Inject('KAFKA_CLIENT') private kafka: ClientKafka) {}
-
-  async emitMarketCreated(event: TMarketCreatedEvent) {
-    const validated = MarketCreatedEventSchema.parse(event)
-    await this.kafka.emit('market.events', {
-      key:   validated.marketId,        // partition by market ID
-      value: JSON.stringify(validated),
-      headers: { 'content-type': 'application/json' },
-    }).toPromise()
-  }
-}
 ```
 
+### Offset Pagination
+
+Standard pattern for list endpoints — return both `items` and `pagination` metadata.
+
 ```typescript
-// market-events.consumer.ts
-@Controller()
-export class MarketEventsConsumer {
-  @MessagePattern('market.events')
-  async handleMarketEvent(
-    @Payload() message: unknown,
-    @Ctx()     ctx: KafkaContext,
-  ) {
-    const heartbeat = ctx.getHeartbeat()
-    const event     = MarketCreatedEventSchema.safeParse(
-      typeof message === 'string' ? JSON.parse(message) : message,
-    )
-
-    if (!event.success) {
-      // Log and skip — never throw (Kafka will retry infinitely)
-      console.error('Invalid event', event.error.flatten())
-      return
-    }
-
-    await heartbeat()
-    // Process event...
-  }
+// Repository — parallel count + data fetch
+async findMany(userId: string, page: number, limit: number) {
+  const offset = (page - 1) * limit
+  const [items, [{ total }]] = await Promise.all([
+    this.db
+      .select({ id: schema.activities.id, stars: schema.activities.stars, createdAt: schema.activities.createdAt })
+      .from(schema.activities)
+      .where(eq(schema.activities.userId, userId))
+      .orderBy(desc(schema.activities.createdAt))
+      .limit(limit)
+      .offset(offset),
+    this.db
+      .select({ total: sql<number>`count(*)` })
+      .from(schema.activities)
+      .where(eq(schema.activities.userId, userId)),
+  ])
+  return { items, total }
 }
-```
 
-### RabbitMQ (Fallback)
-
-```typescript
-ClientsModule.register([{
-  name: 'RABBITMQ_CLIENT',
-  transport: Transport.RMQ,
-  options: {
-    urls:         [process.env.RABBITMQ_URL ?? 'amqp://localhost:5672'],
-    queue:        'market_events',
-    queueOptions: {
-      durable: true,
-      arguments: {
-        'x-dead-letter-exchange': 'market_events.dlx',  // DLQ
-        'x-message-ttl':          3_600_000,             // 1-hour TTL
-      },
-    },
-    noAck:        false,    // manual ack — at-least-once delivery
-    prefetchCount: 10,      // backpressure control
+// Response shape
+return {
+  data: {
+    items,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   },
-}])
-```
-
-### ActiveMQ (STOMP)
-
-```typescript
-// activemq.service.ts
-@Injectable()
-export class ActiveMQService implements OnModuleInit, OnModuleDestroy {
-  private channel!: Stompit.Channel
-
-  onModuleInit() {
-    const servers = [{ host: process.env.ACTIVEMQ_HOST ?? 'localhost', port: 61613, ssl: false }]
-    this.channel  = new Stompit.Channel(new Stompit.ConnectFailover(servers))
-  }
-
-  async publish(destination: string, body: object) {
-    return new Promise<void>((resolve, reject) => {
-      this.channel.send(
-        { destination, 'content-type': 'application/json' },
-        JSON.stringify(body),
-        (err) => (err ? reject(err) : resolve()),
-      )
-    })
-  }
-
-  onModuleDestroy() { this.channel.close() }
-}
-```
-
-### Queue Selection
-
-| Scenario                             | Use         |
-|--------------------------------------|-------------|
-| High-throughput event streaming      | Kafka       |
-| Task queues / RPC-style messaging    | RabbitMQ    |
-| Legacy integration / JMS ecosystem   | ActiveMQ    |
-| All new greenfield services          | Kafka       |
-
----
-
-## Caching Strategies
-
-### Redis Cache-Aside
-
-```typescript
-class CachedMarketRepository implements MarketRepository {
-  constructor(
-    private baseRepo: MarketRepository,
-    private redis: RedisClient,
-  ) {}
-
-  async findById(id: string): Promise<TMarket | null> {
-    const cached = await this.redis.get(`market:${id}`)
-    if (cached) return JSON.parse(cached)
-
-    const market = await this.baseRepo.findById(id)
-    if (market) await this.redis.setex(`market:${id}`, 300, JSON.stringify(market))
-
-    return market
-  }
-
-  async invalidate(id: string) {
-    await this.redis.del(`market:${id}`)
-  }
 }
 ```
 
@@ -738,35 +368,38 @@ class CachedMarketRepository implements MarketRepository {
 
 ## Error Handling Patterns
 
-### Centralized Error Handler
+### BusinessExceptionFilter (Global)
+
+A single `@Catch()` filter intercepts all thrown errors, maps known keys to structured HTTP responses, and logs at the appropriate level.
 
 ```typescript
-class ApiError extends Error {
-  constructor(
-    public statusCode: number,
-    public message: string,
-    public isOperational = true,
-  ) {
-    super(message)
-    Object.setPrototypeOf(this, ApiError.prototype)
+// common/filters/businessException.filter.ts
+@Catch()
+export class BusinessExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(BusinessExceptionFilter.name)
+
+  catch(exception: unknown, host: ArgumentsHost) {
+    const ctx = host.switchToHttp()
+    const res = ctx.getResponse<Response>()
+    const req = ctx.getRequest<Request>()
+    const key = (exception as Error)?.message
+    const entry = ERROR_MAP[key]
+
+    if (entry) {
+      const { code, status, message } = entry
+      if (status >= 500) this.logger.error(`${req.method} ${req.url} → ${status}`, (exception as Error).stack)
+      else this.logger.warn(`${req.method} ${req.url} → ${status} [${key}]`)
+      return res.status(status).json({ error: { code, message } })
+    }
+
+    // Unmapped error → 500
+    this.logger.error('Unhandled exception', (exception as Error)?.stack)
+    return res.status(500).json({ error: { code: 90000, message: 'Internal server error' } })
   }
 }
 
-export function errorHandler(error: unknown): Response {
-  if (error instanceof ApiError) {
-    return NextResponse.json({ success: false, error: error.message }, { status: error.statusCode })
-  }
-
-  if (error instanceof z.ZodError) {
-    return NextResponse.json(
-      { success: false, error: 'Validation failed', details: error.errors },
-      { status: 400 },
-    )
-  }
-
-  console.error('Unexpected error:', error)
-  return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 })
-}
+// Register globally in app.module.ts
+providers: [{ provide: APP_FILTER, useClass: BusinessExceptionFilter }]
 ```
 
 ### Retry with Exponential Backoff
@@ -781,7 +414,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
     } catch (err) {
       lastError = err as Error
       if (i < maxRetries - 1) {
-        await new Promise((r) => setTimeout(r, Math.pow(2, i) * 1000))
+        await new Promise(r => setTimeout(r, Math.pow(2, i) * 1000))
       }
     }
   }
@@ -792,281 +425,90 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
 
 ---
 
-## Authentication & Authorization
+## Zod Validation Patterns
 
-### JWT Validation
+Three usage contexts with different Zod APIs:
 
 ```typescript
-export function verifyToken(token: string): IJWTPayload {
-  try {
-    return jwt.verify(token, process.env.JWT_SECRET!) as IJWTPayload
-  } catch {
-    throw new ApiError(401, 'Invalid token')
+// 1. Request body → safeParse (structured validation errors in response)
+@Post('transactions')
+async saveTransaction(@Body() body: unknown) {
+  const parsed = SaveTransactionSchema.safeParse(body)
+  if (!parsed.success) {
+    throw new BadRequestException({ message: 'Validation failed', errors: parsed.error.flatten() })
   }
+  return { data: await this.service.save(parsed.data) }
 }
 
-export async function requireAuth(request: Request) {
-  const token = request.headers.get('authorization')?.replace('Bearer ', '')
-  if (!token) throw new ApiError(401, 'Missing authorization token')
-  return verifyToken(token)
-}
+// 2. Query params → createZodDto (NestJS pipe integration, auto-validates)
+export class QueryActivityDto extends createZodDto(
+  z.object({
+    page:  z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+) {}
+
+@Get()
+async getActivity(@Query() query: QueryActivityDto) { ... }
+
+// 3. Response shaping → parse (trust internal data; use for type inference only)
+return ActivityResponseSchema.parse({ items, pagination })
 ```
 
-### Role-Based Access Control
+Schema definition:
 
 ```typescript
-type TPermission = 'read' | 'write' | 'delete' | 'admin'
-
-const rolePermissions: Record<IUser['role'], TPermission[]> = {
-  admin:     ['read', 'write', 'delete', 'admin'],
-  moderator: ['read', 'write', 'delete'],
-  user:      ['read', 'write'],
-}
-
-export function requirePermission(permission: TPermission) {
-  return (handler: (req: Request, user: IUser) => Promise<Response>) =>
-    async (req: Request) => {
-      const user = await requireAuth(req)
-      if (!rolePermissions[user.role].includes(permission)) {
-        throw new ApiError(403, 'Insufficient permissions')
-      }
-      return handler(req, user)
-    }
-}
-```
-
----
-
-## Monitoring — Prometheus + Grafana
-
-### Metrics Setup
-
-```typescript
-// metrics.module.ts
-@Module({
-  imports: [PrometheusModule.register({
-    path:           '/metrics',
-    defaultMetrics: { enabled: true },
-  })],
+// modules/activity/schemas/saveTransaction.schema.ts
+export const SaveTransactionSchema = z.object({
+  txHash: z.string().min(1),
+  chainId: z.coerce.number().int(),
+  taskType: z.enum(['swap', 'bridge', 'stake', 'dca']),
+  address: z.string().min(1)
 })
-export class MetricsModule {}
-```
-
-```typescript
-// grpc-metrics.service.ts
-export const grpcRequestsTotal = makeCounterProvider({
-  name:       'grpc_requests_total',
-  help:       'Total gRPC requests',
-  labelNames: ['method', 'status'],
-})
-
-export const grpcRequestDuration = makeHistogramProvider({
-  name:       'grpc_request_duration_seconds',
-  help:       'gRPC request duration in seconds',
-  labelNames: ['method'],
-  buckets:    [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5],
-})
-
-export const mqMessagesProduced = makeCounterProvider({
-  name:       'mq_messages_produced_total',
-  help:       'Messages published to broker',
-  labelNames: ['topic', 'broker'],
-})
-
-export const mqMessagesConsumed = makeCounterProvider({
-  name:       'mq_messages_consumed_total',
-  help:       'Messages consumed from broker',
-  labelNames: ['topic', 'broker', 'status'],
-})
-```
-
-```typescript
-// metrics.interceptor.ts
-@Injectable()
-export class GrpcMetricsInterceptor implements NestInterceptor {
-  constructor(private metrics: GrpcMetricsService) {}
-
-  intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const method = `${ctx.getClass().name}.${ctx.getHandler().name}`
-    const start  = Date.now()
-
-    return next.handle().pipe(
-      tap({
-        next:  ()  => this.metrics.recordRequest(method, 'OK',    Date.now() - start),
-        error: (e) => this.metrics.recordRequest(method, String(e?.code ?? 'ERROR'), Date.now() - start),
-      }),
-    )
-  }
-}
-```
-
-### Key PromQL Queries (Grafana)
-
-```promql
-# Request rate per method
-rate(grpc_requests_total[1m])
-
-# P99 latency per method
-histogram_quantile(0.99, rate(grpc_request_duration_seconds_bucket[5m]))
-
-# Error rate
-sum(rate(grpc_requests_total{status!="OK"}[1m])) by (method)
-  / sum(rate(grpc_requests_total[1m])) by (method)
-
-# Kafka consumer lag (requires kafka-exporter)
-kafka_consumer_group_lag{topic="market.events"}
-
-# DB connection pool
-pg_stat_database_numbackends{datname="market_db"}
-```
-
----
-
-## Cloud Deployment
-
-### GCP Cloud Run
-
-```yaml
-# gRPC requires HTTP/2 end-to-end; gen2 execution environment is mandatory
-spec:
-  template:
-    metadata:
-      annotations:
-        run.googleapis.com/execution-environment: gen2
-    spec:
-      containers:
-        - image: gcr.io/$PROJECT_ID/market-service:latest
-          ports:
-            - name: h2c            # HTTP/2 cleartext — Cloud Run terminates TLS
-              containerPort: 50051
-          livenessProbe:
-            grpc: { port: 50051 }
-          readinessProbe:
-            grpc: { port: 50051 }
-          resources:
-            limits: { cpu: "1", memory: 512Mi }
-```
-
-```bash
-gcloud run deploy market-service \
-  --image gcr.io/$PROJECT_ID/market-service:latest \
-  --port 50051 \
-  --use-http2 \
-  --region us-central1
-```
-
-### AWS ECS / Fargate
-
-```json
-{
-  "containerDefinitions": [{
-    "name": "market-service",
-    "image": "$AWS_ACCOUNT.dkr.ecr.$REGION.amazonaws.com/market-service:latest",
-    "portMappings": [{ "containerPort": 50051, "protocol": "tcp" }],
-    "healthCheck": {
-      "command": ["CMD", "grpc_health_probe", "-addr=:50051"],
-      "interval": 30,
-      "timeout": 10,
-      "retries": 3
-    }
-  }],
-  "requiresCompatibilities": ["FARGATE"],
-  "networkMode": "awsvpc",
-  "cpu": "512",
-  "memory": "1024"
-}
-```
-
-### Dockerfile (Multi-stage)
-
-```dockerfile
-FROM node:22-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --frozen-lockfile
-COPY . .
-RUN npm run build
-
-FROM node:22-alpine AS runner
-WORKDIR /app
-RUN apk add --no-cache grpc-health-probe
-COPY --from=builder /app/dist         ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY proto ./proto
-ENV NODE_ENV=production
-EXPOSE 50051
-CMD ["node", "dist/main.js"]
-```
-
----
-
-## Rate Limiting
-
-```typescript
-class RateLimiter {
-  private requests = new Map<string, number[]>()
-
-  check(identifier: string, maxRequests: number, windowMs: number): boolean {
-    const now     = Date.now()
-    const recent  = (this.requests.get(identifier) ?? []).filter((t) => now - t < windowMs)
-
-    if (recent.length >= maxRequests) return false
-
-    recent.push(now)
-    this.requests.set(identifier, recent)
-    return true
-  }
-}
-
-const limiter = new RateLimiter()
-
-export async function GET(request: Request) {
-  const ip = request.headers.get('x-forwarded-for') ?? 'unknown'
-  if (!limiter.check(ip, 100, 60_000)) {
-    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 })
-  }
-  // ...
-}
+export type TSaveTransactionDto = z.infer<typeof SaveTransactionSchema>
 ```
 
 ---
 
 ## Logging
 
+Pino via `nestjs-pino` — structured JSON in production, pretty-printed in development.
+
 ```typescript
-interface ILogContext {
-  userId?:    string
-  requestId?: string
-  method?:    string
-  path?:      string
-  [key: string]: unknown
-}
-
-class Logger {
-  private log(level: 'info' | 'warn' | 'error', message: string, context?: ILogContext) {
-    console.log(JSON.stringify({ timestamp: new Date().toISOString(), level, message, ...context }))
+// app.module.ts
+LoggerModule.forRoot({
+  pinoHttp: {
+    transport: process.env.NODE_ENV !== 'production' ? { target: 'pino-pretty', options: { colorize: true } } : undefined,
+    level: process.env.NODE_ENV !== 'production' ? 'debug' : 'info'
   }
+})
 
-  info (message: string, context?: ILogContext)               { this.log('info',  message, context) }
-  warn (message: string, context?: ILogContext)               { this.log('warn',  message, context) }
-  error(message: string, err: Error, context?: ILogContext)   {
-    this.log('error', message, { ...context, error: err.message, stack: err.stack })
-  }
-}
+// main.ts
+app.useLogger(app.get(PinoLogger))
+```
+
+```typescript
+// In any service or filter
+private readonly logger = new Logger(ActivityService.name)
+
+this.logger.log('Processing activity', { userId, taskId })
+this.logger.warn('Low credits', { userId, credits })
+this.logger.error('Failed to process', error.stack)
 ```
 
 ---
 
-## New Service Checklist
+## New Module Checklist
 
-- [ ] Create versioned `.proto` file (`package foo.v1`)
-- [ ] Use `google.protobuf.Timestamp` for dates — never plain strings
-- [ ] Define Zod schemas mirroring proto contracts; validate at NestJS handler boundary
-- [ ] Apply `GrpcAuthInterceptor`, `GrpcLoggingInterceptor`, `GrpcMetricsInterceptor` globally
-- [ ] Apply `GrpcExceptionFilter` globally
-- [ ] Expose `/metrics` via `PrometheusModule`
-- [ ] Register `grpc.health.v1` for liveness / readiness probes
-- [ ] Dockerfile: multi-stage, install `grpc-health-probe`, expose correct port
-- [ ] Cloud Run: `--use-http2` + `gen2`; AWS ALB: target-group protocol `HTTP/2`
-
-**Remember**: gRPC is contract-first. Define `.proto` before any code, version your packages, and validate all inputs with Zod at the boundary — the proto compiler enforces types in transit, not inside NestJS handlers.
+- [ ] Create `modules/<name>/` with: controller, service, repository, module.ts, errors.ts, schemas/
+- [ ] Register new module in `AppModule` imports
+- [ ] Define Drizzle schema in `database/schema/<name>.schema.ts`; add indexes; export from `index.ts`
+- [ ] Define string enum + `ErrorEntry` records in `errors.ts` — use the correct `xxxxx` numeric range
+- [ ] Merge error map into `common/exceptions/errorMapping.ts`
+- [ ] Repository: every write method accepts `tx?: TDrizzleTransaction`
+- [ ] Service: inject `TransactionRunner` for any multi-step atomic operation
+- [ ] Controller: use `@Auth()` + `safeParse` for body, `createZodDto()` for query params
+- [ ] `BusinessExceptionFilter` is registered globally — no try/catch needed in controllers
+- [ ] Add logger: `private readonly logger = new Logger(ClassName.name)`
+- [ ] Run `bun run db:generate` then `bun run db:migrate` after schema changes
+- [ ] Write unit tests with Vitest for service logic; integration tests for repository queries
