@@ -108,6 +108,14 @@
         "skills/android-clean-architecture",
         "skills/api-design",
         "skills/backend-patterns",
+        "skills/db-transaction-patterns",
+        "skills/exception-handling",
+        "skills/caching-patterns",
+        "skills/cloud-deployment",
+        "skills/grpc-patterns",
+        "skills/message-queue-patterns",
+        "skills/monitoring-patterns",
+        "skills/rate-limiting",
         "skills/coding-standards",
         "skills/compose-multiplatform-patterns",
         "skills/cpp-coding-standards",
@@ -115,6 +123,7 @@
         "skills/django-patterns",
         "skills/django-tdd",
         "skills/django-verification",
+        "skills/framer-motion-patterns",
         "skills/frontend-patterns",
         "skills/frontend-slides",
         "skills/golang-patterns",
@@ -138,7 +147,9 @@
         "skills/rust-testing",
         "skills/springboot-patterns",
         "skills/springboot-tdd",
-        "skills/springboot-verification"
+        "skills/springboot-verification",
+        "skills/vitest-patterns",
+        "skills/zustand-patterns"
       ],
       "targets": [
         "claude",
