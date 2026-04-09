@@ -108,6 +108,8 @@
         "skills/android-clean-architecture",
         "skills/api-design",
         "skills/backend-patterns",
+        "skills/db-transaction-patterns",
+        "skills/exception-handling",
         "skills/caching-patterns",
         "skills/cloud-deployment",
         "skills/grpc-patterns",

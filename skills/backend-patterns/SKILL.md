@@ -1,25 +1,25 @@
 ---
 name: backend-patterns
-description: Core NestJS patterns for reward-system — Drizzle ORM (MySQL), Zod validation, service layer error codes with BusinessExceptionFilter, TransactionRunner for atomic operations, Pino logging, and JWT auth guards.
+description: Common NestJS backend patterns for EWE projects — Drizzle ORM (MySQL), Zod validation, repository pattern, Pino logging, and JWT auth guards.
 origin: EWE
 ---
 
 # Backend Development Patterns
 
-Core NestJS patterns for reward-system — REST APIs, Drizzle ORM (MySQL), Zod validation, transactional operations, structured error handling, and Pino logging.
+Common NestJS patterns for EWE backend projects — REST APIs, Drizzle ORM (MySQL), Zod validation, repository pattern, and Pino logging.
 
 ## When to Activate
 
 - Implementing a NestJS controller, service, or repository
 - Defining a Drizzle schema (MySQL tables, indexes, relations)
-- Structuring error codes and exception handling
-- Implementing multi-step atomic operations with `TransactionRunner`
 - Writing Zod validation for request body or query params
 - Setting up offset pagination
 - Adding JWT auth guard or extracting user context
 
 ## Related Skills
 
+- **exception-handling** — BusinessExceptionFilter, error code conventions, service-layer error patterns
+- **db-transaction-patterns** — TransactionRunner, atomic multi-step operations, SELECT FOR UPDATE
 - **caching-patterns** — Redis cache-aside, in-memory cache, HTTP cache headers
 - **rate-limiting** — NestJS Throttler, in-memory sliding window, Redis-backed distributed limiting
 - **grpc-patterns** — Proto file design, NestJS gRPC controllers, Zod/exception mapping
@@ -68,63 +68,11 @@ interface IActivityRepository {
 
 See **Database Patterns** for the full Drizzle implementation, `TransactionRunner`, N+1 prevention, and pagination.
 
-### Service Layer & Error Codes
+### Service Layer & Error Handling
 
-Each module defines a string enum and an error map. Services throw `new Error(ErrorKey)`. The global `BusinessExceptionFilter` maps the key to the correct HTTP response — no try/catch needed in controllers.
+Services contain business logic and throw domain error keys. The global `BusinessExceptionFilter` maps keys to HTTP responses — no try/catch needed in controllers.
 
-```typescript
-// modules/activity/errors.ts
-export enum ActivityErrorCode {
-  ALREADY_QUEUED = 'ALREADY_QUEUED',
-  ALREADY_VERIFIED = 'ALREADY_VERIFIED'
-}
-
-export const ACTIVITY_ERRORS: Record<string, ErrorEntry> = {
-  [ActivityErrorCode.ALREADY_QUEUED]: {
-    code: 50001, // 50xxx = activity module range
-    status: HttpStatus.CONFLICT,
-    message: 'This transaction is already in the verification queue.'
-  },
-  [ActivityErrorCode.ALREADY_VERIFIED]: {
-    code: 50002,
-    status: HttpStatus.CONFLICT,
-    message: 'This transaction has already been verified.'
-  }
-}
-```
-
-```typescript
-// common/exceptions/errorMapping.ts — merge all module maps here
-export const ERROR_MAP: Record<string, ErrorEntry> = {
-  ...COMMON_ERRORS, // 10xxx
-  ...PROFILE_ERRORS, // 20xxx
-  ...SPIN_ERRORS, // 30xxx
-  ...CHECKIN_ERRORS, // 40xxx
-  ...ACTIVITY_ERRORS // 50xxx
-  // 90xxx — system errors
-}
-```
-
-```typescript
-// Service — throws enum key only, no HTTP knowledge
-async submitTransaction(userId: string, txHash: string) {
-  const existing = await this.pendingTxRepo.findByHash(txHash)
-  if (existing) throw new Error(ActivityErrorCode.ALREADY_QUEUED)
-  // ...
-}
-```
-
-Controller stays clean — no try/catch:
-
-```typescript
-@Auth()
-@Post('transactions')
-async saveTransaction(@Body() body: unknown): Promise<{ data: TPendingTransaction }> {
-  const parsed = SaveTransactionSchema.safeParse(body)
-  if (!parsed.success) throw new BadRequestException({ errors: parsed.error.flatten() })
-  return { data: await this.activityService.save(parsed.data) }
-}
-```
+For error code conventions (string enum, ErrorEntry, module numeric ranges) and the BusinessExceptionFilter implementation, see **exception-handling** skill.
 
 ### Auth Guard Pattern
 
@@ -239,12 +187,6 @@ export class ActivityRepository {
     const executor = tx ?? this.db
     await executor.insert(schema.activities).values(data)
   }
-
-  // SELECT FOR UPDATE — prevents concurrent writes to the same row
-  async findForUpdate(id: string, tx: TDrizzleTransaction) {
-    const [row] = await tx.select().from(schema.activities).where(eq(schema.activities.id, id)).limit(1).for('update')
-    return row ?? null
-  }
 }
 ```
 
@@ -252,7 +194,6 @@ Rules:
 
 - Always select specific columns — never `select()` with no arguments in production queries
 - Every write method takes `tx?: TDrizzleTransaction`; use `const executor = tx ?? this.db`
-- Use `.for('update')` inside transactions to prevent concurrent modification
 
 ### DB Module (MySQL Connection Pool)
 
@@ -281,35 +222,9 @@ Rules:
 export class DrizzleModule {}
 ```
 
-### TransactionRunner — Atomic Multi-Step Operations
+### Transactions & Atomic Operations
 
-Wrap multiple repository calls in a single database transaction. All repositories accept `tx?` to participate.
-
-```typescript
-// database/transactionRunner.service.ts
-@Injectable()
-export class TransactionRunner {
-  constructor(@Inject(DRIZZLE) private readonly db: TDrizzleDb) {}
-
-  run<T>(fn: (tx: TDrizzleTransaction) => Promise<T>): Promise<T> {
-    return this.db.transaction(fn)
-  }
-}
-```
-
-```typescript
-// Usage in a service — all steps are atomic
-const result = await this.transactionRunner.run(async tx => {
-  const credits = await this.tasksRepo.findCredits(userId, { tx, forUpdate: true })
-  if (credits <= 0) return null
-
-  await this.tasksRepo.consumeCredit(userId, tx)
-  await this.profileRepo.incrementStars(userId, amount, tx)
-  await this.activityRepo.create({ userId, stars: amount }, tx)
-
-  return this.profileRepo.findProfile(userId, { tx })
-})
-```
+For `TransactionRunner`, `SELECT FOR UPDATE`, and atomic multi-step operation patterns, see **db-transaction-patterns** skill.
 
 ### N+1 Query Prevention
 
@@ -326,9 +241,7 @@ const taskIds = activities.map(a => a.taskId).filter(Boolean)
 const tasks = await this.db.select({ id: schema.simpleTasks.id, name: schema.simpleTasks.name }).from(schema.simpleTasks).where(inArray(schema.simpleTasks.id, taskIds))
 
 const taskMap = new Map(tasks.map(t => [t.id, t.name]))
-activities.forEach(a => {
-  a.taskName = taskMap.get(a.taskId)
-})
+const enriched = activities.map(a => ({ ...a, taskName: taskMap.get(a.taskId) }))
 ```
 
 ### Offset Pagination
@@ -366,43 +279,9 @@ return {
 
 ---
 
-## Error Handling Patterns
+## Retry with Exponential Backoff
 
-### BusinessExceptionFilter (Global)
-
-A single `@Catch()` filter intercepts all thrown errors, maps known keys to structured HTTP responses, and logs at the appropriate level.
-
-```typescript
-// common/filters/businessException.filter.ts
-@Catch()
-export class BusinessExceptionFilter implements ExceptionFilter {
-  private readonly logger = new Logger(BusinessExceptionFilter.name)
-
-  catch(exception: unknown, host: ArgumentsHost) {
-    const ctx = host.switchToHttp()
-    const res = ctx.getResponse<Response>()
-    const req = ctx.getRequest<Request>()
-    const key = (exception as Error)?.message
-    const entry = ERROR_MAP[key]
-
-    if (entry) {
-      const { code, status, message } = entry
-      if (status >= 500) this.logger.error(`${req.method} ${req.url} → ${status}`, (exception as Error).stack)
-      else this.logger.warn(`${req.method} ${req.url} → ${status} [${key}]`)
-      return res.status(status).json({ error: { code, message } })
-    }
-
-    // Unmapped error → 500
-    this.logger.error('Unhandled exception', (exception as Error)?.stack)
-    return res.status(500).json({ error: { code: 90000, message: 'Internal server error' } })
-  }
-}
-
-// Register globally in app.module.ts
-providers: [{ provide: APP_FILTER, useClass: BusinessExceptionFilter }]
-```
-
-### Retry with Exponential Backoff
+For transient failures (external API calls, network errors):
 
 ```typescript
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
@@ -503,12 +382,10 @@ this.logger.error('Failed to process', error.stack)
 - [ ] Create `modules/<name>/` with: controller, service, repository, module.ts, errors.ts, schemas/
 - [ ] Register new module in `AppModule` imports
 - [ ] Define Drizzle schema in `database/schema/<name>.schema.ts`; add indexes; export from `index.ts`
-- [ ] Define string enum + `ErrorEntry` records in `errors.ts` — use the correct `xxxxx` numeric range
-- [ ] Merge error map into `common/exceptions/errorMapping.ts`
+- [ ] Define error codes — see **exception-handling** skill for conventions
 - [ ] Repository: every write method accepts `tx?: TDrizzleTransaction`
-- [ ] Service: inject `TransactionRunner` for any multi-step atomic operation
+- [ ] For multi-step atomic operations, use `TransactionRunner` — see **db-transaction-patterns** skill
 - [ ] Controller: use `@Auth()` + `safeParse` for body, `createZodDto()` for query params
-- [ ] `BusinessExceptionFilter` is registered globally — no try/catch needed in controllers
 - [ ] Add logger: `private readonly logger = new Logger(ClassName.name)`
 - [ ] Run `bun run db:generate` then `bun run db:migrate` after schema changes
 - [ ] Write unit tests with Vitest for service logic; integration tests for repository queries
